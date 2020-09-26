@@ -131,7 +131,7 @@ namespace Zutatensuppe.D2Reader
             reader = null;
         }
 
-        bool InitializeGameDataReaders()
+        bool InitializeGameMemoryReaderAndMemory()
         {
             foreach (var desc in this.processDescriptions)
             {
@@ -139,21 +139,36 @@ namespace Zutatensuppe.D2Reader
                 {
                     reader = ProcessMemoryReader.Create(desc.ProcessName, desc.ModuleName, desc.SubModules);
                     memory = CreateGameMemoryTableForReader(reader);
+                    return true;
                 }
                 catch (ProcessNotFoundException)
                 {
-                    CleanUpDataReaders();
                 }
-                catch (ModuleNotLoadedException)
+                catch (ModuleNotLoadedException e)
                 {
-                    CleanUpDataReaders();
+                    Logger.Info($"Module not loaded: {e.Message}", e);
                 }
-                if (reader != null)
+                catch (GameVersionUnsupportedException e)
                 {
-                    break;
+                    Logger.Error($"Game version not supported: {e.Message}", e);
+                }
+                catch (ProcessMemoryReadException e)
+                {
+                    Logger.Error($"Failed to read memory: {e.Message}", e);
+                }
+                catch (Exception e)
+                {
+                    Logger.Error($"Other exception when creating memory table: {e.Message}", e);
                 }
             }
 
+            CleanUpDataReaders();
+            return false;
+        }
+
+        bool InitializeGameDataReaders()
+        {
+            InitializeGameMemoryReaderAndMemory();
             if (reader == null)
             {
                 return false;
@@ -169,24 +184,22 @@ namespace Zutatensuppe.D2Reader
             catch (ModuleNotLoadedException e)
             {
                 Logger.Error($"Try launching a game. Module not loaded: {e.ModuleName}");
-                CleanUpDataReaders();
-
-                return false;
             }
             catch (GameVersionUnsupportedException e)
             {
                 Logger.Error($"Version not supported: {e.GameVersion}");
-                CleanUpDataReaders();
-
-                return false;
             }
-            catch (ProcessMemoryReadException)
+            catch (ProcessMemoryReadException e)
             {
-                Logger.Error("Failed to read memory");
-                CleanUpDataReaders();
-
-                return false;
+                Logger.Error($"Failed to read memory: {e.Message}", e);
             }
+            catch (Exception e)
+            {
+                Logger.Error($"Other exception when creating readers: {e.Message}", e);
+            }
+
+            CleanUpDataReaders();
+            return false;
         }
 
         void CleanUpDataReaders()
@@ -248,8 +261,16 @@ namespace Zutatensuppe.D2Reader
         private bool Read()
         {
             // "Block" here until we have a valid reader.
-            if (!ValidateGameDataReaders())
+            try
             {
+                if (!ValidateGameDataReaders())
+                {
+                    return false;
+                }
+            }
+            catch (Exception e)
+            {
+                Logger.Error($"Other exception when validating game data readers: {e.Message}", e);
                 return false;
             }
 
@@ -257,14 +278,14 @@ namespace Zutatensuppe.D2Reader
             {
                 return ProcessGameData();
             }
-            catch (ThreadAbortException)
+            catch (ThreadAbortException e)
             {
-                Logger.Debug("ThreadAbortException");
+                Logger.Debug($"ThreadAbortException: {e.Message}");
                 throw;
             }
             catch (Exception e)
             {
-                Logger.Debug("Other Exception", e);
+                Logger.Error($"Other exception when processing game data: {e.Message}", e);
 #if DEBUG
                 // Print errors to console in debug builds.
                 Console.WriteLine("Exception: {0}", e);
@@ -466,14 +487,7 @@ namespace Zutatensuppe.D2Reader
 
             var character = ReadCharacterData(gameInfo, isNewChar);
             var quests = ReadQuests(gameInfo);
-            Hireling hireling = null;
-            try
-            {
-                hireling = ReadHirelingData(gameInfo);
-            } catch (Exception e)
-            {
-                Logger.Error("Error reading hireling", e);
-            }
+            var hireling = ReadHirelingData(gameInfo);
 
             if (isNewChar)
             {
@@ -581,16 +595,24 @@ namespace Zutatensuppe.D2Reader
 
         Hireling ReadHirelingData(GameInfo gameInfo)
         {
-            var guid = GetPetGuid(gameInfo.Player, (int)PetClass.HIRELING);
-            if (guid < 0) return null;
+            try
+            {
+                var guid = GetPetGuid(gameInfo.Player, (int)PetClass.HIRELING);
+                if (guid < 0) return null;
 
-            var unit = UnitByTypeAndGuid(D2UnitType.Monster, guid);
-            if (unit == null) return null;
+                var unit = UnitByTypeAndGuid(D2UnitType.Monster, guid);
+                if (unit == null) return null;
 
-            var hireling = new Hireling();
-            hireling.Parse(unit, unitReader, skillReader, reader, gameInfo);
-            hireling.Items = GetItemInfosByItems(GetEquippedItems(unit), unit);
-            return hireling;
+                var hireling = new Hireling();
+                hireling.Parse(unit, unitReader, skillReader, reader, gameInfo);
+                hireling.Items = GetItemInfosByItems(GetEquippedItems(unit), unit);
+                return hireling;
+            }
+            catch (Exception e)
+            {
+                Logger.Error($"Error reading hireling: {e.Message}", e);
+                return null;
+            }
         }
 
         private IEnumerable<Item> GetEquippedItems(D2Unit owner)
